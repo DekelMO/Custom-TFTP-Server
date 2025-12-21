@@ -29,6 +29,12 @@ int main()
     {
         ssize_t bytes_received;
         bytes_received = recvfrom(socketfd, &msg_in, sizeof(msg_in), 0, (struct sockaddr *)&client_addr, &client_len);
+        if (bytes_received > 0)
+        {
+            uint16_t opcode = msg_in.opcode;
+            uint16_t id = msg_in.id;
+
+        }
     }
 
 
