@@ -226,10 +226,11 @@ void handle_drq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
     }
     else
     {
+        fclose(check_exists);
         if (remove(msg_in->payload.filename) == 0) 
         {
             Packet_t ack_packet = {0};
-            ack_packet.id = msg_in->id;
+            ack_packet.id = msg_in->id;//in already in big indian
             ack_packet.opcode = htons(OP_ACK);
             sendto(socketfd, &ack_packet, HEADER_SIZE, 0, (struct sockaddr *)client_addr, client_len);
             printf("Deleted successfully");
