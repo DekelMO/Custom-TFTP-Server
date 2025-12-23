@@ -221,7 +221,6 @@ void handle_drq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
     }
     FILE* check_exists = fopen(msg_in->payload.filename, "r");
     if (!check_exists) {
-        fclose(check_exists);
         send_error_msg(socketfd, ERR_FILE_EXISTS, "File dosent exist", client_addr, client_len);
         return;
     }
