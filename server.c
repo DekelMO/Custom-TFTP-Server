@@ -299,7 +299,7 @@ int main() {
                     break;
 
                 default:
-                    // Optional: send_error_msg for unknown opcode
+                    end_error_msg(socketfd, ERR_ILLEGAL_OP, "Illegal op, u can read write and delete", client_addr, client_len);
                     break;
             }
         }
