@@ -211,6 +211,40 @@ void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
     
 }
 
+void handle_drq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_len, Packet_t *msg_in)
+{
+    printf("DRQ received for file %s\n", msg_in->payload.filename);
+    if (strstr(msg_in->payload.filename, "..") != NULL || msg_in->payload.filename[0] == '/') 
+    {
+        send_error_msg(socketfd, ERR_ILLEGAL_OP, "Illegal file path", client_addr, client_len);
+        return;
+    }
+    FILE* check_exists = fopen(msg_in->payload.filename, "r");
+    if (!check_exists) {
+        fclose(check_exists);
+        send_error_msg(socketfd, ERR_FILE_EXISTS, "File dosent exist", client_addr, client_len);
+        return;
+    }
+    else
+    {
+        if (remove(msg_in->payload.filename) == 0) 
+        {
+            Packet_t ack_packet = {0};
+            ack_packet.id = msg_in->id;
+            ack_packet.opcode = htons(OP_ACK);
+            sendto(socketfd, &ack_packet, HEADER_SIZE, 0, (struct sockaddr *)client_addr, client_len);
+            printf("Deleted successfully");
+
+        } 
+        else 
+        {
+            send_error_msg(socketfd, ERR_DELETING, "Failed to delete", client_addr, client_len);
+            perror("Error deleting file");
+        }
+    }
+
+}
+
 
 
 
