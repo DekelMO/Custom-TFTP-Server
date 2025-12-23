@@ -11,7 +11,7 @@ void send_error_msg(int socket_fd, uint16_t error_code, const char *msg, const s
     Packet_t err_packet = {0};
     err_packet.opcode = htons(OP_ERROR);
     err_packet.id = htons(error_code); 
-    snprintf(err_packet.payload.error_msg, MAX_ERROR_MSG, "%s", msg);;// better then strncpy not adding unnessacery \0
+    snprintf(err_packet.payload.error_msg, MAX_ERROR_MSG, "%s", msg);// better then strncpy not adding unnessacery \0
     int err_len = HEADER_SIZE + strlen(err_packet.payload.error_msg) + 1;
 
     sendto(socket_fd, &err_packet, err_len, 0, (struct sockaddr *)client_addr, addr_len);
@@ -22,6 +22,11 @@ void send_error_msg(int socket_fd, uint16_t error_code, const char *msg, const s
 void handle_rrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_len, Packet_t *msg_in) 
 {
     printf("RRQ received for file %s\n", msg_in->payload.filename);
+    if (strstr(msg_in->payload.filename, "..") != NULL || msg_in->payload.filename[0] == '/') 
+    {
+        send_error_msg(socketfd, ERR_ILLEGAL_OP, "Illegal file path", client_addr, client_len);
+        return;
+    }
     FILE* file = fopen(msg_in->payload.filename, "rb");
 
     if (!file) {
@@ -30,10 +35,12 @@ void handle_rrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
     }
 
     uint16_t block_counter = 1;
+    uint8_t resending_counter = 0;
     Packet_t data_packet = {0};
     Packet_t ack_packet = {0};
     data_packet.opcode = htons(OP_DATA);
     size_t bytes_read = 0;
+    ssize_t bytes_received;
     bool read_next = true;
     bool finish = false;
 
@@ -56,35 +63,60 @@ void handle_rrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
 
         sendto(socketfd, &data_packet, bytes_read + HEADER_SIZE, 0, (struct sockaddr *)client_addr, client_len);
 
-        ssize_t bytes_received = recvfrom(socketfd, &ack_packet, sizeof(ack_packet), 0, (struct sockaddr *)client_addr, &client_len);
+        bytes_received = recvfrom(socketfd, &ack_packet, sizeof(ack_packet), 0, (struct sockaddr *)client_addr, &client_len);
         if (bytes_received < 0) 
         {
-            printf("Timeout! No ACK received for block %d. Resending...\n", block_counter);
-            continue; 
+            if(resending_counter <= MAX_RESENDING)
+            {
+                printf("Timeout! No ACK received for block %d. Resending...\n", block_counter);
+                resending_counter++;
+                continue;
+            }
+            else
+            {
+                printf("too many resendings stop the request");
+                fclose(file);
+                send_error_msg(socketfd, ERR_ATTEMPTS_EXCEEDED, "To many attempts to get the ACK", client_addr, client_len);
+                break;
+
+            } 
         }
+        resending_counter = 0;// reset resending counter only in case the continue wasnt skip the rest of the loop  
         if (bytes_received >= HEADER_SIZE) {
             if (ntohs(ack_packet.opcode) == OP_ACK) {
                 if (ntohs(ack_packet.id) == block_counter) {
-                    if (finish) {
+                    if (finish)//last package has been sent 
+                    {
+                        printf("Transfer finished.\n");
                         break;
                     }
                     block_counter++;
                     read_next = true;
                 }
             }
+            if (ntohs(ack_packet.opcode) == OP_ERROR) 
+            {
+                printf("Received error from client: %s (Code: %d)\n", ack_packet.payload.error_msg, ntohs(ack_packet.id));
+                break; 
+            }
         }
     }
+
     fclose(file);
-    printf("Transfer finished.\n");
 }
 
 void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_len, Packet_t *msg_in) 
 {
     printf("WRQ received for file %s\n", msg_in->payload.filename);
+    if (strstr(msg_in->payload.filename, "..") != NULL || msg_in->payload.filename[0] == '/') 
+    {
+        send_error_msg(socketfd, ERR_ILLEGAL_OP, "Illegal file path", client_addr, client_len);
+        return;
+    }
     FILE* check_exists = fopen(msg_in->payload.filename, "r");
     if (check_exists) {
         fclose(check_exists);
-        send_error_msg(socketfd, 6, "File already exists - delete it first", client_addr, client_len);
+        send_error_msg(socketfd, ERR_FILE_EXISTS, "File already exists - delete it first", client_addr, client_len);
         return;
     }
 
@@ -97,8 +129,10 @@ void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
     
     Packet_t ack_packet = {0};
     uint16_t block_counter = 0;
-    ack_packet.id = block_counter;
-    ack_packet.opcode = OP_ACK;
+    size_t wrote_bytes;
+    uint8_t resending_counter = 0;
+    ack_packet.id = htons(block_counter);
+    ack_packet.opcode = htons(OP_ACK);
     ssize_t bytes_received;
     Packet_t data_packet= {0};
     bool last_pack_received = false;
@@ -109,6 +143,13 @@ void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
 
         if (last_pack_received)
         {
+            bytes_received = recvfrom(socketfd, &data_packet, sizeof(data_packet), 0, (struct sockaddr *)client_addr, &client_len);
+            if(bytes_received > 0)//check if the ACK got lost in the way
+            {
+                continue;//will send again the ACK for the last pack
+            }
+            printf("receing complete");
+            fclose(file);
             break;
         }
 
@@ -116,38 +157,62 @@ void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
         
         if (bytes_received < 0) 
         {
-            printf("Timeout! No DATA received for block %d. Resending ACK...\n", block_counter);            
-            continue; 
-        }
-
-        if(data_packet.opcode == OP_DATA)
-        {
-            if(data_packet.id == block_counter + 1)
+            if(resending_counter <= MAX_RESENDING)
             {
-                block_counter++;
-                if(bytes_received < MAX_PAYLOAD_SIZE + HEADER_SIZE)//last pack
-                {
-                    last_pack_received = true;
-                }
-                //add htons 
-                //wrtie to the file
+                printf("Timeout! No ACK received for block %d. Resending...\n", block_counter);
+                resending_counter++;
+                continue;
+            }
+            else
+            {
+                printf("too many resendings stop the request");
+                fclose(file);
+                send_error_msg(socketfd, ERR_ATTEMPTS_EXCEEDED, "To many attempts to get the next package", client_addr, client_len);
+                break;
 
             }
         }
+        resending_counter = 0;// reset resending counter only in case the continue wasnt skip the rest of the loop
 
+        if(ntohs(data_packet.opcode) == OP_DATA)
+        {
+            if(ntohs(data_packet.id) == block_counter + 1)
+            {
+                wrote_bytes = fwrite(data_packet.payload.data, 1,bytes_received-HEADER_SIZE, file);
+                if(wrote_bytes < bytes_received-HEADER_SIZE)
+                {
+                    fclose(file);
+                    send_error_msg(socketfd, 2, "Disk full", client_addr, client_len);
+                    break;
 
+                }
+                block_counter++;
+                ack_packet.id = htons(block_counter);
+                if(bytes_received < MAX_PAYLOAD_SIZE + HEADER_SIZE)
+                {
+                    last_pack_received = true;
+                }
+
+            }
+            else
+            {
+                printf("Old packet received; our previous ACK was likely lost. Resending ACK...\n");            
+            }
+        }
+        else if(ntohs(data_packet.opcode) == OP_ERROR)
+        {
+            printf("Received error from client: %s (Code: %d)\n", 
+            data_packet.payload.error_msg, ntohs(data_packet.id));
+            fclose(file);
+            return;
+        }
 
     }
     
-
-
-
-
-
-
-
-
 }
+
+
+
 
 int main() {
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -179,18 +244,24 @@ int main() {
     while (1) {
         client_len = sizeof(client_addr);
         ssize_t bytes_received = recvfrom(socketfd, &msg_in, sizeof(msg_in), 0, (struct sockaddr *)&client_addr, &client_len);
-
+        if (bytes_received < 0)
+        {
+            continue;//the main is not limite by the 3 sec receive limitation
+        }
         if (bytes_received > HEADER_SIZE) {
             uint16_t opcode = ntohs(msg_in.opcode);
 
             switch (opcode) {
-                case 1: // RRQ
+                case OP_RRQ: 
                     handle_rrq(socketfd, &client_addr, client_len, &msg_in);
                     break;
 
-                case 2: // WRQ
+                case OP_WRQ: 
                     handle_wrq(socketfd, &client_addr, client_len, &msg_in);
-                    // handle_wrq will go here
+                    break;
+
+                case OP_DELETE:
+                    handle_wrq(socketfd, &client_addr, client_len, &msg_in);
                     break;
 
                 default:

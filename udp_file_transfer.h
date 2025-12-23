@@ -5,6 +5,7 @@
 #define MAX_FILENAME    256     
 #define MAX_ERROR_MSG   128  
 #define HEADER_SIZE 4
+#define MAX_RESENDING 5
 
 #define OP_RRQ    1  // Read Request
 #define OP_WRQ    2  // Write Request
@@ -19,6 +20,8 @@
 #define ERR_ILLEGAL_OP    4  
 #define ERR_FILE_EXISTS   5
 #define READDING_ERROR    6
+#define ERR_ATTEMPTS_EXCEEDED 7
+#define ERR_DELETING 8
 
 typedef struct
 {
