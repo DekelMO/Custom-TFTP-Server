@@ -15,7 +15,7 @@ int main()
             op_input = OP_DELETE;
         printf("Please insert the full file name");
         scanf("%s", file_name);
-        //need to flush out ectra chars???????
+        //need to flush out ectra chars??????
         switch (op_input)
         {
         case OP_RRQ:
