@@ -1,5 +1,6 @@
 #include <stdint.h>
 
+#define CLIENT_PORT
 #define SERVER_PORT     6969    
 #define MAX_PAYLOAD_SIZE 512    
 #define MAX_FILENAME    256     
