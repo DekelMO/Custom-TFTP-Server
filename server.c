@@ -4,7 +4,50 @@
 #include <string.h>
 #include <stdbool.h>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <openssl/aes.h>
+#include <openssl/md5.h>
 #include "udp_file_transfer.h"
+
+// Helper for AES Encryption/Decryption
+void aes_process(const char *in, char *out, size_t len, uint16_t block_id, int enc) {
+    AES_KEY key;
+    unsigned char iv[AES_BLOCK_SIZE];
+    memset(iv, 0, AES_BLOCK_SIZE);
+    // Use block_id to generate unique IV for each packet
+    snprintf((char*)iv, AES_BLOCK_SIZE, "%016d", block_id); 
+
+    if (enc) {
+        AES_set_encrypt_key((const unsigned char*)AES_KEY_STR, 128, &key);
+    } else {
+        AES_set_encrypt_key((const unsigned char*)AES_KEY_STR, 128, &key); // CFB uses encrypt key for both
+    }
+
+    int num = 0;
+    AES_cfb128_encrypt((const unsigned char*)in, (unsigned char*)out, len, &key, iv, &num, enc ? AES_ENCRYPT : AES_DECRYPT);
+}
+
+void create_backup(const char* filename) {
+    char backup_path[MAX_FILENAME + 10];
+    snprintf(backup_path, sizeof(backup_path), "%s%s", BACKUP_DIR, filename);
+    
+    FILE *src = fopen(filename, "rb");
+    if (!src) return;
+    
+    FILE *dst = fopen(backup_path, "wb");
+    if (!dst) { fclose(src); return; }
+    
+    char buffer[1024];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+        fwrite(buffer, 1, n, dst);
+    }
+    
+    fclose(src);
+    fclose(dst);
+    printf("Backup created: %s\n", backup_path);
+}
 
 void send_error_msg(int socket_fd, uint16_t error_code, const char *msg, const struct sockaddr_in *client_addr, socklen_t addr_len) 
 {
@@ -43,10 +86,11 @@ void handle_rrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
     ssize_t bytes_received;
     bool read_next = true;
     bool finish = false;
+    char raw_buffer[MAX_PAYLOAD_SIZE];
 
     while (1) {
         if (read_next) {
-            bytes_read = fread(data_packet.payload.data, 1, MAX_PAYLOAD_SIZE, file);
+            bytes_read = fread(raw_buffer, 1, MAX_PAYLOAD_SIZE, file);
 
             if (ferror(file)) {
                 send_error_msg(socketfd, READDING_ERROR, "Reading file error", client_addr, client_len);
@@ -56,6 +100,9 @@ void handle_rrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
             if (bytes_read < MAX_PAYLOAD_SIZE) {
                 finish = true;
             }
+
+            // Encrypt data
+            aes_process(raw_buffer, data_packet.payload.data, bytes_read, block_counter, 1);
 
             data_packet.id = htons(block_counter);
             read_next = false;
@@ -136,6 +183,7 @@ void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
     ssize_t bytes_received;
     Packet_t data_packet= {0};
     bool last_pack_received = false;
+    char decrypted_data[MAX_PAYLOAD_SIZE];
 
     while (1)
     {
@@ -148,8 +196,9 @@ void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
             {
                 continue;//will send again the ACK for the last pack
             }
-            printf("receing complete");
+            printf("receing complete\n");
             fclose(file);
+            create_backup(msg_in->payload.filename);
             break;
         }
 
@@ -178,7 +227,10 @@ void handle_wrq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
         {
             if(ntohs(data_packet.id) == block_counter + 1)
             {
-                wrote_bytes = fwrite(data_packet.payload.data, 1,bytes_received-HEADER_SIZE, file);
+                // Decrypt data
+                aes_process(data_packet.payload.data, decrypted_data, bytes_received-HEADER_SIZE, block_counter + 1, 0);
+                
+                wrote_bytes = fwrite(decrypted_data, 1,bytes_received-HEADER_SIZE, file);
                 if(wrote_bytes < bytes_received-HEADER_SIZE)
                 {
                     fclose(file);
@@ -249,6 +301,9 @@ void handle_drq(int socketfd, struct sockaddr_in *client_addr, socklen_t client_
 
 
 int main() {
+    // Create backup directory
+    mkdir(BACKUP_DIR, 0777);
+
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (socketfd == -1) {
         printf("couldnt get socket");

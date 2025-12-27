@@ -1,12 +1,17 @@
+#ifndef UDP_FILE_TRANSFER_H
+#define UDP_FILE_TRANSFER_H
+
 #include <stdint.h>
 
 #define CLIENT_PORT
 #define SERVER_PORT     6969    
-#define MAX_PAYLOAD_SIZE 512    
+#define MAX_PAYLOAD_SIZE 1024    // Increased packet size
 #define MAX_FILENAME    256     
 #define MAX_ERROR_MSG   128  
 #define HEADER_SIZE 4
 #define MAX_RESENDING 5
+#define BACKUP_DIR "backup/"
+#define AES_KEY_STR "0123456789abcdef" // 16-byte key
 
 #define OP_RRQ    1  // Read Request
 #define OP_WRQ    2  // Write Request
@@ -35,3 +40,5 @@ typedef struct
     char error_msg[MAX_ERROR_MSG];
    } payload;
 } __attribute__((packed)) Packet_t;
+
+#endif
